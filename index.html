@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Git File Provenance</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css"
+        rel="stylesheet"
+        integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB"
+        crossorigin="anonymous">
+  <style>
+    :root { color-scheme: light; }
+    body { background: #f5f7fa; }
+    .page-shell { max-width: 1500px; }
+    .source-scroll { max-height: 72vh; overflow: auto; }
+    .source-code {
+      display: block;
+      margin: 0;
+      padding: 1rem;
+      min-width: max-content;
+      color: #18212f;
+      background: #fff;
+      font: 0.9rem/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      white-space: pre;
+      tab-size: 4;
+    }
+    .source-line-number {
+      display: inline-block;
+      width: 4.5rem;
+      padding-right: 1rem;
+      color: #8390a2;
+      text-align: right;
+      user-select: none;
+    }
+    .source-char { border-radius: 2px; }
+    .source-char:hover, .source-char:focus {
+      outline: 2px solid #202a39;
+      outline-offset: 1px;
+      position: relative;
+      z-index: 1;
+    }
+    .source-char.newline-char {
+      display: inline-block;
+      width: 0.7em;
+      height: 1em;
+      vertical-align: baseline;
+      position: relative;
+    }
+    .source-char.newline-char::after {
+      content: "↵";
+      position: absolute;
+      inset: 0;
+      color: #8591a1;
+      font-size: 0.75em;
+      line-height: 1;
+      text-align: center;
+    }
+    .author-swatch {
+      display: inline-block;
+      width: 0.85rem;
+      height: 0.85rem;
+      border: 1px solid rgb(0 0 0 / 18%);
+      border-radius: 3px;
+      vertical-align: -0.08rem;
+    }
+    .source-tooltip { --bs-tooltip-max-width: 360px; }
+    .source-tooltip .tooltip-inner { text-align: left; overflow-wrap: anywhere; }
+    #emptyState { min-height: 14rem; }
+  </style>
+</head>
+<body>
+  <main class="container-fluid page-shell py-4 py-lg-5">
+    <header class="mb-4">
+      <p class="text-primary fw-semibold text-uppercase small mb-2">Repository inspection</p>
+      <h1 class="h2 mb-2">Git File Provenance</h1>
+      <p class="text-secondary mb-0">Explore which commit Git attributes each character to. Select a provenance JSON file to begin.</p>
+    </header>
+
+    <section class="card shadow-sm border-0 mb-4" aria-labelledby="loadHeading">
+      <div class="card-body p-3 p-md-4">
+        <div class="row align-items-end g-3">
+          <div class="col-12 col-lg">
+            <label for="jsonFile" id="loadHeading" class="form-label fw-semibold">Provenance JSON file</label>
+            <input class="form-control" type="file" id="jsonFile" accept=".json,application/json">
+          </div>
+          <div class="col-12 col-lg-auto">
+            <button class="btn btn-outline-secondary w-100" id="clearButton" type="button" disabled>Clear</button>
+          </div>
+        </div>
+        <div id="status" class="small mt-3 text-secondary" role="status" aria-live="polite">The selected file is read locally in your browser.</div>
+        <div id="error" class="alert alert-danger mt-3 mb-0 d-none" role="alert"></div>
+      </div>
+    </section>
+
+    <section id="filePanel" class="d-none" aria-live="polite">
+      <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-end gap-2 mb-3">
+        <div class="min-w-0">
+          <h2 id="filePath" class="h4 text-break mb-1"></h2>
+          <div class="small text-secondary">Revision <code id="revision"></code> <span class="mx-1">·</span> <span id="fileStats"></span></div>
+        </div>
+        <div id="legend" class="d-flex flex-wrap gap-2" aria-label="Author color legend"></div>
+      </div>
+
+      <div class="card shadow-sm border-0 overflow-hidden">
+        <div class="card-header bg-white d-flex justify-content-between align-items-center py-3">
+          <h3 class="h6 mb-0">Source</h3>
+          <div class="d-flex flex-wrap justify-content-end align-items-center gap-2">
+            <span class="badge text-bg-light border fw-normal" id="attributionMethod"></span>
+            <span class="small text-secondary">Hover a character for its commit and author</span>
+          </div>
+        </div>
+        <div class="source-scroll" id="sourceScroll">
+          <pre class="source-code" id="source" aria-label="Source code with character provenance"></pre>
+        </div>
+      </div>
+
+      <section class="card shadow-sm border-0 mt-4" aria-labelledby="historyHeading">
+        <div class="card-header bg-white py-3">
+          <h3 class="h6 mb-0" id="historyHeading">Commit history, including removed text</h3>
+        </div>
+        <div class="table-responsive">
+          <table class="table table-hover align-middle mb-0">
+            <thead class="table-light"><tr><th scope="col">Commit</th><th scope="col">Author</th><th scope="col">Subject</th><th scope="col" class="text-end">Lines added</th><th scope="col" class="text-end">Lines removed</th></tr></thead>
+            <tbody id="commitHistory"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <section id="emptyState" class="card border-0 shadow-sm d-flex justify-content-center align-items-center text-center p-4">
+      <div>
+        <div class="display-6 text-secondary mb-2" aria-hidden="true">⌁</div>
+        <h2 class="h5">No file loaded</h2>
+        <p class="text-secondary mb-0">Choose a JSON file generated by <code>Get-GitFileProvenance.ps1</code>.</p>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"
+          integrity="sha384-FKyoEForCGlyvwx9Hj09JcYn3nv7wiPVlz7YYwJrWVcXK/BmnVDxM+D2scQbITxI"
+          crossorigin="anonymous"></script>
+  <script>
+    (() => {
+      'use strict';
+
+      const fileInput = document.getElementById('jsonFile');
+      const clearButton = document.getElementById('clearButton');
+      const status = document.getElementById('status');
+      const errorBox = document.getElementById('error');
+      const filePanel = document.getElementById('filePanel');
+      const emptyState = document.getElementById('emptyState');
+      const source = document.getElementById('source');
+      const legend = document.getElementById('legend');
+      const commitHistory = document.getElementById('commitHistory');
+      const codePointCount = value => Array.from(value).length;
+
+      function validate(data) {
+        if (!data || typeof data !== 'object' || typeof data.text !== 'string') {
+          throw new Error('This does not look like a Git file provenance JSON file (missing text).');
+        }
+        if (!Array.isArray(data.commits) || !Array.isArray(data.users) || !Array.isArray(data.lines) || !Array.isArray(data.provenance)) {
+          throw new Error('The JSON must include commits, users, lines, and provenance arrays.');
+        }
+
+        const total = codePointCount(data.text);
+        let expectedStart = 0;
+        for (const run of data.provenance) {
+          if (!Number.isInteger(run.start) || !Number.isInteger(run.count) || run.start !== expectedStart || run.count < 1 || !Number.isInteger(run.commit) || !data.commits[run.commit]) {
+            throw new Error('The provenance ranges are incomplete or contain an invalid commit reference.');
+          }
+          expectedStart += run.count;
+        }
+        if (expectedStart !== total) {
+          throw new Error(`The provenance covers ${expectedStart} code points, but the text contains ${total}.`);
+        }
+
+        expectedStart = 0;
+        for (const line of data.lines) {
+          if (!Number.isInteger(line.start) || !Number.isInteger(line.count) || line.start !== expectedStart || line.count < 0 || !Number.isInteger(line.commit) || !data.commits[line.commit]) {
+            throw new Error('The line ranges are incomplete or contain an invalid commit reference.');
+          }
+          if (line.user !== undefined && (!Number.isInteger(line.user) || !data.users[line.user])) {
+            throw new Error('A line refers to an unknown author.');
+          }
+          expectedStart += line.count;
+        }
+        if (expectedStart !== total) {
+          throw new Error(`The line ranges cover ${expectedStart} code points, but the text contains ${total}.`);
+        }
+        for (const commit of data.commits) {
+          if (!commit || typeof commit.sha !== 'string') throw new Error('A commit is missing its SHA.');
+        }
+        return total;
+      }
+
+      function authorIdentity(commit) {
+        return commit.authorMail || commit.author || '(unknown author)';
+      }
+
+      function makeAuthorColors(data) {
+        const authors = [];
+        const indexes = new Map();
+        // Start with widely separated amber and blue colors. The remaining
+        // curated colors also avoid red and green; later authors use the
+        // non-red/non-green hue bands below.
+        const basePalette = [
+          '#F6D365', // amber
+          '#8FB9F3', // blue
+          '#C5A5E8', // purple
+          '#80CFE3', // cyan
+          '#B3ACEB', // lavender
+          '#A7D3F2', // sky blue
+          '#EFD58A', // sand
+          '#B8C7D9'  // slate blue
+        ];
+        // Keep author colors in blue/cyan, purple, and amber hue ranges.
+        // The omitted ranges avoid red and green so colors do not suggest
+        // removals and additions.
+        const hueBands = [
+          { start: 198, length: 52 }, // cyan through blue
+          { start: 260, length: 40 }, // purple
+          { start: 32, length: 23 }   // amber
+        ];
+        const totalHueRange = hueBands.reduce((sum, band) => sum + band.length, 0);
+        for (const commit of data.commits) {
+          const key = authorIdentity(commit);
+          if (!indexes.has(key)) {
+            const index = authors.length;
+            indexes.set(key, index);
+            let color;
+            if (index < basePalette.length) {
+              color = basePalette[index];
+            } else {
+              let huePosition = (index * 137.508) % totalHueRange;
+              let hue = hueBands[0].start;
+              for (const band of hueBands) {
+                if (huePosition < band.length) {
+                  hue = band.start + huePosition;
+                  break;
+                }
+                huePosition -= band.length;
+              }
+              color = `hsl(${hue.toFixed(1)} 78% 87%)`;
+            }
+            authors.push({ key, name: commit.author || '(unknown author)', color });
+          }
+        }
+        return { authors, indexes };
+      }
+
+      function addLegend(authors) {
+        legend.replaceChildren();
+        for (const author of authors) {
+          const item = document.createElement('span');
+          item.className = 'badge rounded-pill text-dark fw-normal border bg-white';
+          const swatch = document.createElement('span');
+          swatch.className = 'author-swatch me-1';
+          swatch.style.backgroundColor = author.color;
+          item.append(swatch, document.createTextNode(author.name));
+          legend.append(item);
+        }
+      }
+
+      function renderCommitHistory(commits) {
+        commitHistory.replaceChildren();
+        for (const commit of commits) {
+          const row = document.createElement('tr');
+          const commitCell = document.createElement('td');
+          const sha = document.createElement('code');
+          sha.textContent = commit.sha;
+          commitCell.append(sha);
+          if (commit.removalOnly) {
+            const badge = document.createElement('span');
+            badge.className = 'badge text-bg-warning ms-2';
+            badge.textContent = 'Removed only';
+            commitCell.append(badge);
+          }
+          const authorCell = document.createElement('td');
+          authorCell.textContent = commit.author || '(unknown author)';
+          const subjectCell = document.createElement('td');
+          subjectCell.textContent = commit.summary || '';
+          const addedCell = document.createElement('td');
+          addedCell.className = 'text-end';
+          addedCell.textContent = Number(commit.addedLines || 0).toLocaleString();
+          const removedCell = document.createElement('td');
+          removedCell.className = 'text-end';
+          removedCell.textContent = Number(commit.removedLines || 0).toLocaleString();
+          row.append(commitCell, authorCell, subjectCell, addedCell, removedCell);
+          commitHistory.append(row);
+        }
+      }
+
+      function render(data, total) {
+        const { authors, indexes } = makeAuthorColors(data);
+        addLegend(authors);
+        renderCommitHistory(data.commits);
+        source.replaceChildren();
+
+        const points = Array.from(data.text);
+        let runIndex = 0;
+        let runEnd = data.provenance.length ? data.provenance[0].start + data.provenance[0].count : 0;
+        let lineIndex = 0;
+        let lineEnd = data.lines.length ? data.lines[0].start + data.lines[0].count : 0;
+        const fragment = document.createDocumentFragment();
+
+        for (let offset = 0; offset < points.length; offset++) {
+          while (runIndex < data.provenance.length - 1 && offset >= runEnd) {
+            runIndex++;
+            runEnd = data.provenance[runIndex].start + data.provenance[runIndex].count;
+          }
+          while (lineIndex < data.lines.length - 1 && offset >= lineEnd) {
+            lineIndex++;
+            lineEnd = data.lines[lineIndex].start + data.lines[lineIndex].count;
+          }
+
+          const char = points[offset];
+          const line = data.lines[lineIndex];
+          if (offset === line.start) {
+            const number = document.createElement('span');
+            number.className = 'source-line-number';
+            number.setAttribute('aria-hidden', 'true');
+            number.textContent = `${line.line ?? lineIndex + 1}`;
+            fragment.append(number);
+          }
+
+          const commitIndex = data.provenance[runIndex].commit;
+          const commit = data.commits[commitIndex];
+          const authorKey = authorIdentity(commit);
+          const authorIndex = indexes.get(authorKey);
+          const span = document.createElement('span');
+          span.className = 'source-char';
+          span.style.backgroundColor = authors[authorIndex].color;
+          span.dataset.bsToggle = 'tooltip';
+          span.dataset.bsCustomClass = 'source-tooltip';
+          span.dataset.bsPlacement = 'top';
+          span.dataset.bsTitle = `${commit.author || '(unknown author)'}\n${commit.sha}${commit.summary ? `\n${commit.summary}` : ''}`;
+          span.setAttribute('aria-label', `${JSON.stringify(char)}, authored by ${commit.author || '(unknown author)'}, commit ${commit.sha}`);
+
+          if (char === '\n' || char === '\r') {
+            span.classList.add('newline-char');
+            span.setAttribute('aria-label', char === '\n' ? 'line feed' : 'carriage return');
+            span.textContent = ' ';
+          } else {
+            span.textContent = char;
+          }
+          fragment.append(span);
+          if (char === '\n' || (char === '\r' && points[offset + 1] !== '\n')) {
+            fragment.append(document.createTextNode('\n'));
+          }
+        }
+        source.append(fragment);
+
+        document.getElementById('filePath').textContent = data.path || fileInput.files[0].name;
+        document.getElementById('revision').textContent = data.revision || 'HEAD';
+        document.getElementById('fileStats').textContent = `${data.lines.length.toLocaleString()} lines · ${total.toLocaleString()} code points · ${data.commits.length.toLocaleString()} commits · ${authors.length.toLocaleString()} authors`;
+        document.getElementById('attributionMethod').textContent = data.attributionMethod || 'Character attribution method not specified';
+        filePanel.classList.remove('d-none');
+        emptyState.classList.add('d-none');
+        clearButton.disabled = false;
+
+        if (window.bootstrap?.Tooltip) {
+          bootstrap.Tooltip.getOrCreateInstance(source, {
+            selector: '[data-bs-toggle="tooltip"]',
+            trigger: 'hover focus',
+            html: false,
+            container: 'body'
+          });
+        } else {
+          for (const span of source.querySelectorAll('[data-bs-toggle="tooltip"]')) {
+            span.title = span.dataset.bsTitle;
+          }
+        }
+      }
+
+      function clearView() {
+        filePanel.classList.add('d-none');
+        emptyState.classList.remove('d-none');
+        source.replaceChildren();
+        legend.replaceChildren();
+        commitHistory.replaceChildren();
+        clearButton.disabled = true;
+      }
+
+      fileInput.addEventListener('change', async () => {
+        errorBox.classList.add('d-none');
+        errorBox.textContent = '';
+        const file = fileInput.files?.[0];
+        if (!file) return;
+        status.textContent = `Reading ${file.name}…`;
+        try {
+          const data = JSON.parse(await file.text());
+          const total = validate(data);
+          render(data, total);
+          status.textContent = `Loaded ${file.name} locally.`;
+        } catch (error) {
+          clearView();
+          status.textContent = 'Could not load the selected file.';
+          errorBox.textContent = error instanceof SyntaxError ? 'The selected file is not valid JSON.' : error.message;
+          errorBox.classList.remove('d-none');
+        }
+      });
+
+      clearButton.addEventListener('click', () => {
+        fileInput.value = '';
+        errorBox.classList.add('d-none');
+        status.textContent = 'The selected file is read locally in your browser.';
+        clearView();
+      });
+    })();
+  </script>
+</body>
+</html>
